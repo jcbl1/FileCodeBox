@@ -1,0 +1,182 @@
+name: Docker build test
+
+# Manual, fork-friendly build + smoke test, then push to your own Docker Hub.
+#
+# - Tag format: <VERSION>-<12-char commit sha>, e.g. 2.8.3-c510c3f2a1b9
+# - Image:     <DOCKER_USERNAME>/filecodebox
+# - Secrets:   DOCKER_USERNAME / DOCKER_PASSWORD (use a Docker Hub access token)
+#
+# The amd64 image is built and loaded first, smoke-tested, and only pushed when
+# every assertion passes. Set build_arm64 to publish a multi-arch tag instead.
+on:
+  workflow_dispatch:
+    inputs:
+      build_arm64:
+        description: "Publish a multi-arch (linux/amd64 + linux/arm64) image"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-build-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image tags
+        id: tag
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          short="${GITHUB_SHA::12}"
+          echo "tag=${version}-${short}" >> "$GITHUB_OUTPUT"
+          echo "image=${DOCKER_USERNAME}/filecodebox" >> "$GITHUB_OUTPUT"
+
+      - name: Check Docker Hub credentials
+        run: |
+          set -euo pipefail
+          if [ -z "${DOCKER_USERNAME}" ] || [ -z "${DOCKER_PASSWORD}" ]; then
+            echo "::error::DOCKER_USERNAME / DOCKER_PASSWORD secrets are not set (use a Docker Hub access token)."
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # load: true requires a single platform; the multi-arch manifest is built
+      # after the smoke test passes.
+      - name: Build amd64 image for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: filecodebox:smoke
+          provenance: false
+          build-args: |
+            APP_VERSION=${{ steps.tag.outputs.tag }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=docker-build-test
+          cache-to: type=gha,mode=max,scope=docker-build-test
+
+      - name: Start container
+        run: |
+          docker run -d --name fcb-smoke -p 12345:12345 \
+            -e TIMEOUT_KEEP_ALIVE=2 \
+            filecodebox:smoke
+
+      - name: Wait for /health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:12345/health; then
+              echo "healthy after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "service did not become healthy"
+          docker logs fcb-smoke
+          exit 1
+
+      - name: Assert startup and runtime tuning
+        run: |
+          set -euo pipefail
+          docker logs fcb-smoke 2>&1 | tee /tmp/fcb.log
+
+          # Database migrations must have run to the latest revision.
+          grep -q "migrations_008.py" /tmp/fcb.log
+
+          # The running uvicorn process (PID 1 via `exec`) must have loaded both
+          # optimized backends; installation alone does not prove auto-selection.
+          docker exec fcb-smoke sh -c "grep -q uvloop /proc/1/maps"
+          docker exec fcb-smoke sh -c "grep -q httptools /proc/1/maps"
+
+          # Dockerfile ENV values must reach the container/process environment.
+          docker exec fcb-smoke printenv MALLOC_TRIM_THRESHOLD_ | grep -qx 65536
+          docker exec fcb-smoke printenv TIMEOUT_KEEP_ALIVE | grep -qx 2
+
+      - name: Assert keep-alive override is wired to uvicorn
+        run: |
+          python - <<'PY'
+          import socket
+          import time
+
+          def request(sock):
+              sock.sendall(b"GET /health HTTP/1.1\r\nHost: test\r\n\r\n")
+              time.sleep(0.5)
+              return sock.recv(65536)
+
+          sock = socket.create_connection(("127.0.0.1", 12345), timeout=5)
+          try:
+              assert request(sock).startswith(b"HTTP/1.1 200"), "unexpected first response"
+              # TIMEOUT_KEEP_ALIVE=2 means the idle socket must be closed well
+              # before this 4s wait completes.
+              time.sleep(4)
+              closed = False
+              try:
+                  closed = request(sock) == b""
+              except (BrokenPipeError, ConnectionResetError):
+                  closed = True
+              except TimeoutError:
+                  closed = False
+          finally:
+              sock.close()
+
+          if not closed:
+              raise SystemExit("TIMEOUT_KEEP_ALIVE override not applied")
+          print("keep-alive override applied")
+          PY
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs fcb-smoke || true
+
+      - name: Cleanup smoke container
+        if: always()
+        run: docker rm -f fcb-smoke || true
+
+      # Only reached when every prior step succeeded, so a broken image is
+      # never published. Reuses the build cache from the smoke build.
+      - name: Push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ inputs.build_arm64 && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: true
+          tags: ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
+          provenance: false
+          build-args: |
+            APP_VERSION=${{ steps.tag.outputs.tag }}
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha,scope=docker-build-test
+          cache-to: type=gha,mode=max,scope=docker-build-test
+
+      - name: Verify published image
+        run: |
+          set -euo pipefail
+          image="${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}"
+          docker buildx imagetools inspect "$image"
+          {
+            echo "### Published image"
+            echo ""
+            echo '```'
+            echo "$image"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
