@@ -26,10 +26,11 @@ from apps.base.quota import owned_storage_queryset
 
 def expired_file_q(now: datetime) -> Q:
     """SQL version of FileCodes.is_expired:
-    expired_at IS NOT NULL AND ((expired_count < 0 AND expired_at < now) OR expired_count = 0)
+    (expired_count < 0 AND expired_at IS NOT NULL AND expired_at < now) OR expired_count = 0
     """
-    return Q(expired_at__isnull=False) & (
-        Q(expired_count__lt=0, expired_at__lt=now) | Q(expired_count=0)
+    return (
+        Q(expired_count__lt=0, expired_at__isnull=False, expired_at__lt=now)
+        | Q(expired_count=0)
     )
 
 
@@ -58,7 +59,7 @@ def _missing_download_source_q() -> Q:
 
 def danger_file_q(now: datetime) -> Q:
     """severity == danger：已过期、次数耗尽，或缺少可下载来源。"""
-    return expired_file_q(now) | Q(expired_count=0) | _missing_download_source_q()
+    return expired_file_q(now) | _missing_download_source_q()
 
 
 class FileService:
@@ -588,7 +589,7 @@ class FileService:
             "attention": danger | soon,
             "danger": danger,
             "warning": ~danger & soon,
-            "expired": expired_file_q(now) | Q(expired_count=0),
+            "expired": expired_file_q(now),
             "expiring_soon": soon,
             "storage_issue": _missing_download_source_q(),
             "never_retrieved": Q(used_count=0),

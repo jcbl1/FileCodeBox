@@ -165,10 +165,16 @@ async def clean_expired_presign_sessions():
                                 "清理过期直传文件失败 "
                                 f"upload_id={session.upload_id}: {e}"
                             )
-                    await StorageReservation.filter(
-                        token=f"presign:{session.upload_id}"
-                    ).delete()
-                    await session.delete()
+                    try:
+                        await StorageReservation.filter(
+                            token=f"presign:{session.upload_id}"
+                        ).delete()
+                        await session.delete()
+                    except Exception as e:
+                        logger.error(
+                            "删除过期预签名会话记录失败 "
+                            f"upload_id={session.upload_id}: {e}"
+                        )
         except Exception as e:
             logger.error(f"清理过期预签名会话异常: {e}")
         finally:

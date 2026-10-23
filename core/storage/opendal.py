@@ -59,7 +59,7 @@ class OpenDALFileStorage(FileStorageInterface):
     async def _discard_partial_write(self, writer, save_path: str) -> None:
         """关闭流式 writer 并尽力删除已部分写入的对象。"""
         try:
-            writer.close()
+            await writer.close()
         finally:
             try:
                 await self.operator.delete(save_path)
@@ -82,11 +82,11 @@ class OpenDALFileStorage(FileStorageInterface):
                 block = await asyncio.to_thread(stream.read, 256 * 1024)
                 if not block:
                     break
-                writer.write(block)
+                await writer.write(block)
         except Exception:
             await self._discard_partial_write(writer, save_path)
             raise
-        writer.close()
+        await writer.close()
 
     async def delete_file(self, file_code: StoredFile):
         await self.operator.delete(file_code.get_file_path())
@@ -170,13 +170,13 @@ class OpenDALFileStorage(FileStorageInterface):
                         raise ValueError(f"分片{i}文件不存在: {e}")
 
                     self._verify_and_hash_chunk(i, chunk_record, chunk_data, file_sha256)
-                    writer.write(chunk_data)
+                    await writer.write(chunk_data)
                     del chunk_data  # 释放分片内存
             except Exception:
                 # 失败时目标对象可能已被部分写入，尽力清理后再抛出。
                 await self._discard_partial_write(writer, save_path)
                 raise
-            writer.close()
+            await writer.close()
             return save_path, file_sha256.hexdigest()
 
         # 旧版 SDK 回退路径：临时文件避免重复网络读，最后整文件写入。

@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from apps.base.models import FileCodes
-from apps.base.tasks import delete_expire_files
+from apps.base.models import FileCodes, PresignUploadSession
+from apps.base.tasks import clean_expired_presign_sessions, delete_expire_files
 from core.utils import get_now
 
 
@@ -83,3 +83,41 @@ async def test_failed_row_does_not_block_progress(db, tmp_path, monkeypatch):
     assert await FileCodes.filter(code="bad").exists()
     assert not await FileCodes.filter(code="good1").exists()
     assert not await FileCodes.filter(code="good2").exists()
+
+
+@pytest.mark.asyncio
+async def test_failed_presign_delete_does_not_block_progress(db, tmp_path, monkeypatch):
+    monkeypatch.setattr("apps.base.tasks.CLEANUP_BATCH_SIZE", 1)
+    now = await get_now()
+    for uid in ["bad-p", "good-p1", "good-p2"]:
+        await PresignUploadSession.create(
+            upload_id=uid,
+            file_name="f.bin",
+            file_size=1,
+            save_path="share/data/2026/01/01/f.bin",
+            mode="proxy",
+            expires_at=now - datetime.timedelta(minutes=5),
+        )
+
+    real_delete = PresignUploadSession.delete
+
+    async def flaky_delete(self, using_db=None):
+        if self.upload_id == "bad-p":
+            raise RuntimeError("presign delete boom")
+        return await real_delete(self, using_db=using_db)
+
+    monkeypatch.setattr(PresignUploadSession, "delete", flaky_delete)
+
+    def _sleep(_seconds):
+        raise _SleepSentinel
+
+    with patch("apps.base.tasks.data_root", tmp_path), patch(
+        "core.storage.local.data_root", tmp_path
+    ), patch("apps.base.tasks.asyncio.sleep", side_effect=_sleep):
+        with pytest.raises(_SleepSentinel):
+            await clean_expired_presign_sessions()
+
+    assert await PresignUploadSession.filter(upload_id="bad-p").exists()
+    assert not await PresignUploadSession.filter(upload_id="good-p1").exists()
+    assert not await PresignUploadSession.filter(upload_id="good-p2").exists()
+

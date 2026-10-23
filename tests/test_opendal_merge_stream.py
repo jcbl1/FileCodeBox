@@ -22,11 +22,12 @@ class FakeWriter:
         self.store = store
         self.events = events
 
-    def write(self, data):
+    async def write(self, data):
         self.events.append(("write", len(data)))
         self.store[self.path] = self.store.get(self.path, b"") + data
+        return len(data)
 
-    def close(self):
+    async def close(self):
         self.events.append(("close",))
 
 
