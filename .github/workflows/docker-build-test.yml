@@ -100,8 +100,28 @@ jobs:
           set -euo pipefail
           docker logs fcb-smoke 2>&1 | tee /tmp/fcb.log
 
-          # Database migrations must have run to the latest revision.
-          grep -q "migrations_008.py" /tmp/fcb.log
+          # LOG_LEVEL=warning hides the INFO migration lines, so verify the
+          # migration state in SQLite instead of grepping the logs. Expected
+          # files are derived from the image, so new migrations need no edit.
+          docker exec -i fcb-smoke python - <<'PY'
+          import glob
+          import os
+          import sqlite3
+
+          expected = {
+              os.path.basename(path)
+              for path in glob.glob("/app/apps/base/migrations/migrations_*.py")
+          }
+          applied = {
+              row[0]
+              for row in sqlite3.connect("/app/data/filecodebox.db").execute(
+                  "SELECT migration_file FROM migrates"
+              )
+          }
+          missing = expected - applied
+          assert not missing, f"missing migrations: {sorted(missing)}"
+          print(f"all {len(expected)} migrations applied")
+          PY
 
           # The running uvicorn process (PID 1 via `exec`) must have loaded both
           # optimized backends; installation alone does not prove auto-selection.
