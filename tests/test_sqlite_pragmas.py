@@ -1,4 +1,4 @@
-"""批次四：SQLite 连接 PRAGMA 生效性验证。
+"""SQLite 连接 PRAGMA 生效性验证。
 
 不 mock 配置字典，而是用 get_db_config() 真起一个文件库读取 PRAGMA——
 Tortoise 的 SqliteClient 在 create_connection() 时逐条执行 credentials 中的

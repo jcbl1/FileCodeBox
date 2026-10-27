@@ -1,4 +1,4 @@
-"""Batch 1: IPRateLimit is bounded and uses a monotonic clock."""
+"""IPRateLimit is bounded and uses a monotonic clock."""
 import unittest
 from unittest import mock
 

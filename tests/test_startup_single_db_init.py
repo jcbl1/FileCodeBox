@@ -1,4 +1,4 @@
-"""Batch 1: one Tortoise init path, ORM exception mappings still registered."""
+"""One Tortoise init path; ORM exception mappings still registered."""
 import asyncio
 import unittest
 from pathlib import Path

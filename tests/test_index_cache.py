@@ -1,4 +1,4 @@
-"""Batch 1: index.html render cache must stay correct across config/theme changes."""
+"""index.html render cache must stay correct across config/theme changes."""
 import asyncio
 import os
 import tempfile

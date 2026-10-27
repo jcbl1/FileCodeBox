@@ -1,4 +1,4 @@
-"""Batch 1: theme assets get a safe Cache-Control policy.
+"""Theme assets get a safe Cache-Control policy.
 
 Fingerprinted (Vite) filenames can be cached immutably; public assets whose
 names do not change must use a short TTL so in-place upgrades are picked up.
