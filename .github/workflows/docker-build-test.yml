@@ -2,19 +2,15 @@ name: Docker build test
 
 # Manual, fork-friendly build + smoke test, then push to your own Docker Hub.
 #
-# - Tag format: <VERSION>-<12-char commit sha>, e.g. 2.8.3-c510c3f2a1b9
+# - Tags:      <VERSION>-<12-char commit sha>, e.g. 2.8.3-c510c3f2a1b9, plus latest
 # - Image:     <DOCKER_USERNAME>/filecodebox
 # - Secrets:   DOCKER_USERNAME / DOCKER_PASSWORD (use a Docker Hub access token)
 #
 # The amd64 image is built and loaded first, smoke-tested, and only pushed when
-# every assertion passes. Set build_arm64 to publish a multi-arch tag instead.
+# every assertion passes. The published image is always multi-arch
+# (linux/amd64 + linux/arm64) and also updates the `latest` tag.
 on:
   workflow_dispatch:
-    inputs:
-      build_arm64:
-        description: "Publish a multi-arch (linux/amd64 + linux/arm64) image"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -178,9 +174,11 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: ${{ inputs.build_arm64 && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
+          tags: |
+            ${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.tag.outputs.image }}:latest
           provenance: false
           build-args: |
             APP_VERSION=${{ steps.tag.outputs.tag }}
@@ -192,11 +190,18 @@ jobs:
         run: |
           set -euo pipefail
           image="${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}"
-          docker buildx imagetools inspect "$image"
+          latest="${{ steps.tag.outputs.image }}:latest"
+          for tag in "$image" "$latest"; do
+            echo "--- $tag"
+            docker buildx imagetools inspect "$tag"
+          done
           {
             echo "### Published image"
             echo ""
             echo '```'
             echo "$image"
+            echo "$latest"
             echo '```'
+            echo ""
+            echo "Platforms: \`linux/amd64,linux/arm64\`"
           } >> "$GITHUB_STEP_SUMMARY"
