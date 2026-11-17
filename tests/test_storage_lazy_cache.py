@@ -111,7 +111,12 @@ def test_factory_reuses_instance_until_config_changes(monkeypatch):
     assert first is second
     assert len(created) == 1
 
-    monkeypatch.setattr(settings, "s3_endpoint_url", "https://changed.example")
+    # Patch the config dict, not the Settings attribute: Settings.__getattr__ /
+    # __setattr__ keep values in user_config, so pytest >= 9.2 (which restores
+    # the instance __dict__ entry) tries delattr() on teardown and errors out.
+    monkeypatch.setitem(
+        settings.user_config, "s3_endpoint_url", "https://changed.example"
+    )
     third = factory()
     assert third is not first
     assert len(created) == 2
